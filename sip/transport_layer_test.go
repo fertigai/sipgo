@@ -336,3 +336,17 @@ func TestTransportLayerResolving(t *testing.T) {
 	assert.True(t, addr.IP.To4() != nil)
 	assert.Equal(t, "127.0.0.1:0", addr.String())
 }
+
+func TestSRVServiceProtoFollowsRFC3263(t *testing.T) {
+	cases := []struct{ network, scheme, service, proto string }{
+		{"udp", "sip", "sip", "udp"},
+		{"tcp", "sip", "sip", "tcp"},
+		{"tls", "sip", "sips", "tcp"},
+		{"tls", "sips", "sips", "tcp"},
+	}
+	for _, c := range cases {
+		service, proto := srvServiceProto(c.network, c.scheme)
+		assert.Equal(t, c.service, service, c.network)
+		assert.Equal(t, c.proto, proto, c.network)
+	}
+}
