@@ -698,21 +698,13 @@ func (l *TransportLayer) resolveAddrIP(ctx context.Context, hostname string, add
 
 func (l *TransportLayer) resolveAddrSRV(ctx context.Context, network string, hostname string, sipScheme string, addr *Addr) error {
 	log := l.log
-	var proto string
-	switch network {
-	case "udp", "udp4", "udp6":
-		proto = "udp"
-	case "tls":
-		proto = "tls"
-	default:
-		proto = "tcp"
-	}
+	service, proto := srvServiceProto(network, sipScheme)
 
-	log.Debug("Doing SRV lookup", "scheme", sipScheme, "proto", proto, "host", hostname)
+	log.Debug("Doing SRV lookup", "scheme", service, "proto", proto, "host", hostname)
 
 	// The returned records are sorted by priority and randomized
 	// by weight within a priority.
-	_, addrs, err := l.dnsResolver.LookupSRV(ctx, sipScheme, proto, hostname)
+	_, addrs, err := l.dnsResolver.LookupSRV(ctx, service, proto, hostname)
 	if err != nil {
 		return fmt.Errorf("fail to lookup SRV for %q: %w", hostname, err)
 	}
@@ -838,5 +830,19 @@ func NetworkToUpper(network string) string {
 		return "WSS"
 	default:
 		return ASCIIToUpper(network)
+	}
+}
+
+// srvServiceProto maps a transport onto the SRV service and protocol labels of
+// RFC 3263 section 4.1. TLS is the "sips" service carried over TCP: there is no
+// "_tls" protocol label, and a "_sip._tls" name resolves nowhere.
+func srvServiceProto(network string, sipScheme string) (service string, proto string) {
+	switch network {
+	case "udp", "udp4", "udp6":
+		return sipScheme, "udp"
+	case "tls":
+		return "sips", "tcp"
+	default:
+		return sipScheme, "tcp"
 	}
 }
