@@ -712,19 +712,16 @@ func (l *TransportLayer) resolveAddrSRV(ctx context.Context, network string, hos
 	log.Debug("SRV resolved", "addrs", addrs)
 	record := addrs[0]
 
-	ips, err := l.dnsResolver.LookupIP(ctx, "ip", record.Target)
-	if err != nil {
+	// The target is resolved like any other host, so the address family
+	// preference applies here too. Taking the first address returned put a
+	// dual-stack target on IPv6 whenever it had an AAAA record, which is not
+	// what the rest of the layer does and not what every carrier answers on.
+	if err := l.resolveAddrIP(ctx, record.Target, addr); err != nil {
 		return err
 	}
-
-	log.Debug("SRV resolved IPS", "ips", ips, "target", record.Target)
-	addr.IP = ips[0]
 	addr.Port = int(record.Port)
 
-	if addr.IP == nil {
-		return fmt.Errorf("SRV resolving failed for %q", record.Target)
-	}
-
+	log.Debug("SRV resolved IP", "ip", addr.IP, "port", addr.Port, "target", record.Target)
 	return nil
 }
 
