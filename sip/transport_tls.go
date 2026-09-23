@@ -13,6 +13,14 @@ var ()
 type TransportTLS struct {
 	*TransportTCP
 
+	// ServerName, when set, names the identity a connection to raddr is verified
+	// against and the SNI it sends, in place of the dialled host. It lets an
+	// application that reaches a carrier through an IP address it learned in a
+	// dialog (a Contact, a Record-Route) keep verifying the carrier's certificate
+	// against the domain it was configured with — an IP sends no SNI at all.
+	// Empty, or nil, keeps the dialled host.
+	ServerName func(raddr Addr) string
+
 	// rootPool *x509.CertPool
 	tlsClient func(conn net.Conn, hostname string) *tls.Conn
 }
@@ -43,6 +51,11 @@ func (t *TransportTLS) CreateConnection(ctx context.Context, laddr Addr, raddr A
 		hostname := raddr.Hostname
 		if hostname == "" {
 			hostname = raddr.IP.String()
+		}
+		if t.ServerName != nil {
+			if n := t.ServerName(raddr); n != "" {
+				hostname = n
+			}
 		}
 
 		var tladdr *net.TCPAddr = nil
