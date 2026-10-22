@@ -2,7 +2,7 @@ version: "2.4"
 
 services:
   proxy:
-    image: golang:latest
+    image: golang:1.27.3-trixie
     command: go run . -ip=10.5.0.20:5060 -dst 10.5.0.30:5060
     # stdin_open: true
     # command: bash
@@ -29,7 +29,7 @@ services:
       - 8080:8080
 
   uas:
-    image: ctaloi/sipp
+    image: ctaloi/sipp@sha256:c459f2340443ddcc159227efc798217dbdaad0dbe88b76b78b1a876aa271986a
     command: -sn uas -f 5 -i 10.5.0.30
     # network_mode: "host"
     cpuset: "4"
@@ -38,7 +38,7 @@ services:
         ipv4_address: 10.5.0.30
 
   uac:
-    image: ctaloi/sipp
+    image: ctaloi/sipp@sha256:c459f2340443ddcc159227efc798217dbdaad0dbe88b76b78b1a876aa271986a
     command: -sn uac -r 1 -rp 1000 -rate_increase 25 -rate_interval 1 -rate_max 2000 -no_rate_quit -m 1000000 -fd 1 -i 10.5.0.10 10.5.0.20:5060
     # network_mode: "host"
     cpuset: "5"

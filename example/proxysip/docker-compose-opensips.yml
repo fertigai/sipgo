@@ -2,7 +2,7 @@ version: "2.4"
 
 services:
   proxy:
-    image: opensips/opensips
+    image: opensips/opensips:4.0
     command: -F -m 1000
     # command: ls -lah
     volumes:
@@ -18,7 +18,7 @@ services:
         ipv4_address: 10.5.0.20
 
   uas:
-    image: ctaloi/sipp
+    image: ctaloi/sipp@sha256:c459f2340443ddcc159227efc798217dbdaad0dbe88b76b78b1a876aa271986a
     command: -sn uas -f 30 -i 10.5.0.30
     # network_mode: "host"
     cpuset: "4"
@@ -28,7 +28,7 @@ services:
 
 
   uac:
-    image: ctaloi/sipp
+    image: ctaloi/sipp@sha256:c459f2340443ddcc159227efc798217dbdaad0dbe88b76b78b1a876aa271986a
     command: -sn uac -r 1 -rp 1000 -rate_increase 50 -rate_interval 1 -rate_max 1000 -no_rate_quit -m 100000 -fd 1 -i 10.5.0.10 -rsa 10.5.0.20:5060 10.5.0.30  
     # network_mode: "host"
     cpuset: "5"
