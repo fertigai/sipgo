@@ -9,12 +9,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
       - name: secrets
-        env:
-          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || github.event_name == 'push' && format('{0}..{1}', github.event.before, github.sha) || '' }}
+        env: { EVENT: "${{ github.event_name }}", BASE: "${{ github.event.pull_request.base.sha }}", HEAD: "${{ github.event.pull_request.head.sha }}", BEFORE: "${{ github.event.before }}" }
         run: |
+          range=() # workflow_dispatch: full history
+          if [ "$EVENT" = pull_request ]; then range=(--log-opts="$BASE..$HEAD")
+          elif [ "$EVENT" = push ] && [ -n "${BEFORE//0/}" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then range=(--log-opts="$BEFORE..$GITHUB_SHA")
+          elif [ "$EVENT" = push ]; then range=(--log-opts="-1 $GITHUB_SHA"); fi # new branch, force push or all-zeros before
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo:ro" "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f" \
-            git /repo --redact --no-banner --verbose ${RANGE:+--log-opts="$RANGE"}
-      - name: dependencies
+            git /repo --redact --no-banner --verbose "${range[@]}"
+      - name: dependencies # Go only: no --java-db-repository; --cache-backend left at Trivy's default
         run: |
           mkdir -p "$RUNNER_TEMP/trivy"
           t() { docker run --rm --user "$(id -u):$(id -g)" -v "$RUNNER_TEMP/trivy:/cache" -v "$PWD:/src:ro" -w /src "ghcr.io/aquasecurity/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c" "$@" --cache-dir /cache --skip-version-check --no-progress; }
