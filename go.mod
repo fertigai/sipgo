@@ -1,8 +1,8 @@
 module github.com/emiago/sipgo
 
-go 1.23.0
+go 1.27.0
 
-toolchain go1.24.2
+toolchain go1.27.3
 
 require (
 	github.com/gobwas/ws v1.3.2
