@@ -12,7 +12,7 @@ make build
 This command will build a docker image with OpenSIPS master version taken from
 the git repository. To build a different git version, you can run:
 ```
-OPENSIPS_VERSION=2.2 make build
+OPENSIPS_VERSION=3.6 make build
 ```
 
 To build with MySQL support:
@@ -27,9 +27,9 @@ make start
 
 ## Variables
 You can set different variables to tune your deployment:
- * `OPENSIPS_VERSION` - sets the opensips version (Default: `3.1`)
+ * `OPENSIPS_VERSION` - sets the opensips version (Default: `4.0`)
  * `OPENSIPS_BUILD` - specifies the build to use, `nightly` or `releases` (Default: `releases`)
- * `OPENSIPS_DOCKER_TAG` - indicates the docker tag (Default: `latest`)
+ * `OPENSIPS_DOCKER_TAG` - indicates the docker tag (Default: `4.0`)
  * `OPENSIPS_CLI` - specifies whether to install opensips-cli (`true`) or not (`false`) (Default: `true`)
  * `OPENSIPS_EXTRA_MODULES` - specifies extra opensips modules to install (Default: no other module)
 
