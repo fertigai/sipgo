@@ -249,9 +249,9 @@ func TestDialogClientACKRetransmission(t *testing.T) {
 	assert.EqualValues(t, 3, atomic.LoadInt32(&acks))
 }
 
-// testCancelUAS fakes a callee: it answers CANCEL with 200 and then the INVITE with finalAfterCancel,
+// testCancelUAS fakes a callee: it answers CANCEL with cancelStatus and then the INVITE with finalAfterCancel,
 // BYE with 200, and reports every non-INVITE request it receives.
-func testCancelUAS(t *testing.T, finalAfterCancel int) (*Client, <-chan *siptest.ClientTxResponder, func() *sip.Request) {
+func testCancelUAS(t *testing.T, cancelStatus, finalAfterCancel int) (*Client, <-chan *siptest.ClientTxResponder, func() *sip.Request) {
 	invites := make(chan *siptest.ClientTxResponder, 1)
 	reqs := make(chan *sip.Request, 10)
 	var invite atomic.Pointer[sip.Request]
@@ -265,7 +265,7 @@ func testCancelUAS(t *testing.T, finalAfterCancel int) (*Client, <-chan *siptest
 			return
 		case sip.CANCEL:
 			reqs <- req
-			w.Receive(sip.NewResponseFromRequest(req, 200, "OK", nil))
+			w.Receive(sip.NewResponseFromRequest(req, cancelStatus, "", nil))
 			inviteW.Load().Receive(sip.NewResponseFromRequest(invite.Load(), finalAfterCancel, "", nil))
 		case sip.BYE:
 			reqs <- req
@@ -297,7 +297,7 @@ func TestDialogClientInviteCancel(t *testing.T) {
 	cancel()
 
 	t.Run("BeforeProvisional", func(t *testing.T) {
-		client, invites, next := testCancelUAS(t, sip.StatusRequestTerminated)
+		client, invites, next := testCancelUAS(t, sip.StatusOK, sip.StatusRequestTerminated)
 		d := invite(t, client)
 		w := <-invites
 
@@ -311,7 +311,7 @@ func TestDialogClientInviteCancel(t *testing.T) {
 	})
 
 	t.Run("FinalBeforeProvisional", func(t *testing.T) {
-		client, invites, next := testCancelUAS(t, sip.StatusRequestTerminated)
+		client, invites, next := testCancelUAS(t, sip.StatusOK, sip.StatusRequestTerminated)
 		d := invite(t, client)
 		w := <-invites
 
@@ -325,7 +325,7 @@ func TestDialogClientInviteCancel(t *testing.T) {
 	})
 
 	t.Run("AfterRinging", func(t *testing.T) {
-		client, invites, next := testCancelUAS(t, sip.StatusRequestTerminated)
+		client, invites, next := testCancelUAS(t, sip.StatusOK, sip.StatusRequestTerminated)
 		d := invite(t, client)
 		w := <-invites
 		go w.Receive(sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil))
@@ -342,7 +342,8 @@ func TestDialogClientInviteCancel(t *testing.T) {
 	})
 
 	t.Run("2xxRacesCancel", func(t *testing.T) {
-		client, invites, next := testCancelUAS(t, sip.StatusOK)
+		// The callee answered before it saw the CANCEL, so the CANCEL gets 481 and the 200 must still be ended.
+		client, invites, next := testCancelUAS(t, sip.StatusCallTransactionDoesNotExists, sip.StatusOK)
 		d := invite(t, client)
 		w := <-invites
 		go w.Receive(sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil))
