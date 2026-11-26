@@ -354,7 +354,8 @@ func (s *DialogClientSession) WaitAnswer(ctx context.Context, opts AnswerOptions
 // No CANCEL is sent if a final response arrives first. A 2xx means the callee answered anyway,
 // so it is ACKed and the call is ended with BYE. The CANCEL transaction ends with the INVITE's
 // final response: a UAS that answers the INVITE 487 but never the CANCEL itself would otherwise
-// keep it retransmitting, and the caller waiting, until Timer F.
+// keep it retransmitting, and the caller waiting, until Timer F. A CANCEL response that has not
+// arrived by then is not reported.
 func (s *DialogClientSession) inviteCancel(tx sip.ClientTransaction) error {
 	defer tx.Terminate()
 
@@ -410,6 +411,9 @@ func (s *DialogClientSession) inviteCancel(tx sip.ClientTransaction) error {
 		case <-tx.Done():
 			return errors.Join(cancelErr, tx.Err())
 		case <-timeout:
+			if cancelDone != nil {
+				return fmt.Errorf("cancel got no final response: %w", sip.ErrTransactionTimeout)
+			}
 			return cancelErr
 		}
 	}
