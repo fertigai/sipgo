@@ -422,12 +422,22 @@ func TestDialogClientEarlyRequest(t *testing.T) {
 		_, err := d.Do(context.TODO(), message())
 		require.ErrorIs(t, err, ErrDialogOutsideDialog)
 
-		// A 100 Trying carries no To tag, so there is still no dialog.
-		go d.WaitAnswer(context.TODO(), AnswerOptions{})
-		w.Receive(sip.NewResponseFromRequest(d.InviteRequest, sip.StatusTrying, "Trying", nil))
-		time.Sleep(10 * time.Millisecond)
-		_, err = d.Do(context.TODO(), message())
-		require.ErrorIs(t, err, ErrDialogOutsideDialog)
+		// A 100 Trying carries no To tag, and a malformed 180 no To at all: still no dialog.
+		noTo := sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil)
+		noTo.RemoveHeader("To")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		got := make(chan struct{})
+		go d.WaitAnswer(ctx, AnswerOptions{OnResponse: func(*sip.Response) error {
+			got <- struct{}{}
+			return nil
+		}})
+		for _, res := range []*sip.Response{sip.NewResponseFromRequest(d.InviteRequest, sip.StatusTrying, "Trying", nil), noTo} {
+			go w.Receive(res)
+			<-got
+			_, err = d.Do(context.TODO(), message())
+			require.ErrorIs(t, err, ErrDialogOutsideDialog)
+		}
 	})
 
 	t.Run("ThenCancel", func(t *testing.T) {
@@ -464,8 +474,20 @@ func TestDialogClientEarlyRequest(t *testing.T) {
 		require.True(t, ack.IsAck())
 		assert.Equal(t, inviteCSeq(d), ack.CSeq().SeqNo, "ACK must repeat the INVITE CSeq")
 
+		// A re-INVITE and a MESSAGE inside its transaction: the ACK follows the re-INVITE.
+		reinvite, err := d.TransactionRequest(context.TODO(), sip.NewRequest(sip.INVITE, sip.Uri{User: "test", Host: "localhost"}))
+		require.NoError(t, err)
+		defer reinvite.Terminate()
+		reinviteCSeq := d.CSEQ()
+		assert.Equal(t, inviteCSeq(d)+2, reinviteCSeq)
+		_, err = d.Do(context.TODO(), message())
+		require.NoError(t, err)
+		<-reqs
+		require.NoError(t, d.WriteAck(context.TODO(), sip.NewRequest(sip.ACK, sip.Uri{User: "test", Host: "localhost"})))
+		assert.Equal(t, reinviteCSeq, (<-reqs).CSeq().SeqNo, "ACK must repeat the re-INVITE CSeq")
+
 		require.NoError(t, d.Bye(context.TODO()))
-		assert.Equal(t, inviteCSeq(d)+2, (<-reqs).CSeq().SeqNo)
+		assert.Equal(t, inviteCSeq(d)+4, (<-reqs).CSeq().SeqNo)
 	})
 }
 

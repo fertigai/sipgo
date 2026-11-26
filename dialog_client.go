@@ -128,10 +128,14 @@ func (s *DialogClientSession) buildReq(req *sip.Request) error {
 	if req.To() == nil {
 		// https://datatracker.ietf.org/doc/html/rfc3261#section-12.1
 		// Only a response with a To tag creates a dialog, early or confirmed.
-		if inviteResponse == nil || !inviteResponse.To().Params.Has("tag") {
+		var to *sip.ToHeader
+		if inviteResponse != nil {
+			to = inviteResponse.To()
+		}
+		if to == nil || !to.Params.Has("tag") {
 			return fmt.Errorf("%w: no response with a To tag yet", ErrDialogOutsideDialog)
 		}
-		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(inviteResponse.To()))
+		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(to))
 	}
 
 	if h, invH := req.CallID(), s.InviteRequest.CallID(); h == nil {
@@ -477,10 +481,11 @@ func (s *DialogClientSession) WriteAck(ctx context.Context, ack *sip.Request) er
 
 // Bye sends bye and terminates session. Use WriteBye if you want to customize bye request
 func (s *DialogClientSession) Bye(ctx context.Context) error {
-	if s.InviteResponse == nil {
+	inviteResponse := s.loadInviteResponse()
+	if inviteResponse == nil {
 		return fmt.Errorf("bye: can not send as no invite response present")
 	}
-	bye := newByeRequestUAC(s.InviteRequest, s.InviteResponse, nil)
+	bye := newByeRequestUAC(s.InviteRequest, inviteResponse, nil)
 	return s.WriteBye(ctx, bye)
 }
 
@@ -522,7 +527,8 @@ func (s *DialogClientSession) WriteBye(ctx context.Context, bye *sip.Request) er
 }
 
 func (s *DialogClientSession) isEarlyDialog() bool {
-	return s.InviteResponse != nil && s.InviteResponse.IsProvisional() && s.InviteResponse.StatusCode != 100
+	r := s.loadInviteResponse()
+	return r != nil && r.IsProvisional() && r.StatusCode != 100
 }
 
 // newAckRequestUAC creates ACK request for 2xx INVITE
