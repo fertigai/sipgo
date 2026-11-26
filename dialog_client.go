@@ -401,13 +401,19 @@ func (s *DialogClientSession) WaitAnswer(ctx context.Context, opts AnswerOptions
 
 // inviteCancel sends CANCEL once a provisional response is received and waits for the final response.
 // No CANCEL is sent if a final response arrives first. A 2xx means the callee answered anyway,
-// so it is ACKed and the call is ended with BYE.
+// so it is ACKed and the call is ended with BYE. The CANCEL transaction ends with the INVITE's
+// final response: a UAS that answers the INVITE 487 but never the CANCEL itself would otherwise
+// keep it retransmitting, and the caller waiting, until Timer F.
 func (s *DialogClientSession) inviteCancel(tx sip.ClientTransaction) error {
 	defer tx.Terminate()
 
 	provisional := s.InviteResponse != nil && s.InviteResponse.IsProvisional()
 	var cancelErr error
 	var timeout <-chan time.Time
+	var cancelTx sip.ClientTransaction
+	// Nil until the CANCEL is sent and again once it has its final response, so the select skips them.
+	var cancelRes <-chan *sip.Response
+	var cancelDone <-chan struct{}
 	for {
 		if provisional && timeout == nil {
 			// https://datatracker.ietf.org/doc/html/rfc3261#section-9.1
@@ -417,14 +423,28 @@ func (s *DialogClientSession) inviteCancel(tx sip.ClientTransaction) error {
 			// final response for the original request in 64*T1 seconds
 			timeout = time.After(64 * sip.T1)
 
-			res, err := s.Do(context.Background(), newCancelRequest(s.InviteRequest)) // Cancel should grab same connection underhood
-			if err == nil && res.StatusCode != 200 {
-				err = fmt.Errorf("cancel failed with non 200. code=%d", res.StatusCode)
+			var err error
+			cancelTx, err = s.TransactionRequest(context.Background(), newCancelRequest(s.InviteRequest)) // Cancel should grab same connection underhood
+			if err != nil {
+				cancelErr = err
+			} else {
+				defer cancelTx.Terminate()
+				cancelRes, cancelDone = cancelTx.Responses(), cancelTx.Done()
 			}
-			cancelErr = err
 		}
 
 		select {
+		case r := <-cancelRes:
+			if r.IsProvisional() {
+				continue
+			}
+			if r.StatusCode != 200 {
+				cancelErr = fmt.Errorf("cancel failed with non 200. code=%d", r.StatusCode)
+			}
+			cancelRes, cancelDone = nil, nil
+		case <-cancelDone:
+			cancelErr = cancelTx.Err()
+			cancelRes, cancelDone = nil, nil
 		case r := <-tx.Responses():
 			s.setInviteResponse(r)
 			if r.IsProvisional() {
