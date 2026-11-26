@@ -321,7 +321,10 @@ func testCancelUAS(t *testing.T, cancelStatus, finalAfterCancel int) (*Client, <
 			return
 		case sip.CANCEL:
 			reqs <- req
-			w.Receive(sip.NewResponseFromRequest(req, cancelStatus, "", nil))
+			// Zero leaves the CANCEL unanswered, as some UASes do once they answer the INVITE 487.
+			if cancelStatus != 0 {
+				w.Receive(sip.NewResponseFromRequest(req, cancelStatus, "", nil))
+			}
 			inviteW.Load().Receive(sip.NewResponseFromRequest(invite.Load(), finalAfterCancel, "", nil))
 		case sip.BYE:
 			reqs <- req
@@ -392,6 +395,26 @@ func TestDialogClientInviteCancel(t *testing.T) {
 			return nil
 		}})
 		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, sip.StatusRequestTerminated, d.InviteResponse.StatusCode)
+		assert.Equal(t, sip.CANCEL, next().Method)
+		assert.Nil(t, next())
+	})
+
+	t.Run("CancelNeverAnswered", func(t *testing.T) {
+		// The INVITE's 487 ends the wait; the unanswered CANCEL must not hold it until Timer F.
+		client, invites, next := testCancelUAS(t, 0, sip.StatusRequestTerminated)
+		d := invite(t, client)
+		w := <-invites
+		go w.Receive(sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		start := time.Now()
+		err := d.WaitAnswer(ctx, AnswerOptions{OnResponse: func(res *sip.Response) error {
+			cancel()
+			return nil
+		}})
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Less(t, time.Since(start), 4*sip.T1, "must not wait for the CANCEL's own response")
 		assert.Equal(t, sip.StatusRequestTerminated, d.InviteResponse.StatusCode)
 		assert.Equal(t, sip.CANCEL, next().Method)
 		assert.Nil(t, next())
