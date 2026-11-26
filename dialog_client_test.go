@@ -360,6 +360,115 @@ func TestDialogClientInviteCancel(t *testing.T) {
 	})
 }
 
+func TestDialogClientEarlyRequest(t *testing.T) {
+	// earlyDialog rings with a To tag and answers MESSAGE with 202, CANCEL with 200 and then the INVITE with 487.
+	earlyDialog := func(t *testing.T) (*DialogClientSession, *siptest.ClientTxResponder, <-chan *sip.Request) {
+		reqs := make(chan *sip.Request, 10)
+		invites := make(chan *siptest.ClientTxResponder, 1)
+		var invite atomic.Pointer[sip.Request]
+		var inviteW atomic.Pointer[siptest.ClientTxResponder]
+		client := testClientResponder(t, func(req *sip.Request, w *siptest.ClientTxResponder) {
+			switch req.Method {
+			case sip.INVITE:
+				invite.Store(req)
+				inviteW.Store(w)
+				invites <- w
+				return
+			case sip.MESSAGE:
+				w.Receive(sip.NewResponseFromRequest(req, sip.StatusAccepted, "Accepted", nil))
+			case sip.CANCEL:
+				w.Receive(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+				inviteW.Load().Receive(sip.NewResponseFromRequest(invite.Load(), sip.StatusRequestTerminated, "", nil))
+			case sip.BYE:
+				w.Receive(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+			}
+			reqs <- req
+		})
+		dua := DialogUA{Client: client}
+		d, err := dua.Invite(context.TODO(), sip.Uri{User: "test", Host: "localhost"}, nil)
+		require.NoError(t, err)
+		return d, <-invites, reqs
+	}
+	ringing := func(d *DialogClientSession) *sip.Response {
+		res := sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil)
+		res.To().Params.Add("tag", "callee")
+		return res
+	}
+	message := func() *sip.Request {
+		return sip.NewRequest(sip.MESSAGE, sip.Uri{User: "test", Host: "localhost"})
+	}
+	// answer runs WaitAnswer and sends a MESSAGE from another goroutine once the callee rings.
+	answer := func(t *testing.T, ctx context.Context, d *DialogClientSession, w *siptest.ClientTxResponder) (<-chan error, *sip.Response) {
+		rang := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- d.WaitAnswer(ctx, AnswerOptions{OnResponse: func(res *sip.Response) error {
+				if res.StatusCode == sip.StatusRinging {
+					close(rang)
+				}
+				return nil
+			}})
+		}()
+		go w.Receive(ringing(d))
+		<-rang
+		res, err := d.Do(context.TODO(), message())
+		require.NoError(t, err)
+		return done, res
+	}
+	inviteCSeq := func(d *DialogClientSession) uint32 { return d.InviteRequest.CSeq().SeqNo }
+
+	t.Run("BeforeTaggedResponse", func(t *testing.T) {
+		d, w, _ := earlyDialog(t)
+		_, err := d.Do(context.TODO(), message())
+		require.ErrorIs(t, err, ErrDialogOutsideDialog)
+
+		// A 100 Trying carries no To tag, so there is still no dialog.
+		go d.WaitAnswer(context.TODO(), AnswerOptions{})
+		w.Receive(sip.NewResponseFromRequest(d.InviteRequest, sip.StatusTrying, "Trying", nil))
+		time.Sleep(10 * time.Millisecond)
+		_, err = d.Do(context.TODO(), message())
+		require.ErrorIs(t, err, ErrDialogOutsideDialog)
+	})
+
+	t.Run("ThenCancel", func(t *testing.T) {
+		d, w, reqs := earlyDialog(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		done, res := answer(t, ctx, d, w)
+		assert.Equal(t, sip.StatusAccepted, res.StatusCode)
+
+		msg := <-reqs
+		assert.Equal(t, inviteCSeq(d)+1, msg.CSeq().SeqNo)
+		tag, _ := msg.To().Params.Get("tag")
+		assert.Equal(t, "callee", tag)
+
+		cancel()
+		require.ErrorIs(t, <-done, context.Canceled)
+		cancelReq := <-reqs
+		require.Equal(t, sip.CANCEL, cancelReq.Method)
+		assert.Equal(t, inviteCSeq(d), cancelReq.CSeq().SeqNo, "CANCEL must repeat the INVITE CSeq")
+		assert.Equal(t, sip.CANCEL, cancelReq.CSeq().MethodName)
+	})
+
+	t.Run("ThenAnswer", func(t *testing.T) {
+		d, w, reqs := earlyDialog(t)
+		done, _ := answer(t, context.Background(), d, w)
+		<-reqs // MESSAGE
+
+		ok := sip.NewResponseFromRequest(d.InviteRequest, sip.StatusOK, "OK", nil)
+		ok.To().Params.Add("tag", "callee")
+		w.Receive(ok)
+		require.NoError(t, <-done)
+
+		require.NoError(t, d.Ack(context.TODO()))
+		ack := <-reqs
+		require.True(t, ack.IsAck())
+		assert.Equal(t, inviteCSeq(d), ack.CSeq().SeqNo, "ACK must repeat the INVITE CSeq")
+
+		require.NoError(t, d.Bye(context.TODO()))
+		assert.Equal(t, inviteCSeq(d)+2, (<-reqs).CSeq().SeqNo)
+	})
+}
+
 func BenchmarkDialogDo(b *testing.B) {
 	ua, _ := NewUA()
 	cli, _ := NewClient(ua)

@@ -19,6 +19,21 @@ type DialogClientSession struct {
 
 	// onClose triggers when user calls Close
 	onClose func()
+
+	// responseMu guards InviteResponse writes while WaitAnswer runs, so a request can be sent in an early dialog
+	responseMu sync.Mutex
+}
+
+func (s *DialogClientSession) setInviteResponse(r *sip.Response) {
+	s.responseMu.Lock()
+	s.InviteResponse = r
+	s.responseMu.Unlock()
+}
+
+func (s *DialogClientSession) loadInviteResponse() *sip.Response {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+	return s.InviteResponse
 }
 
 func (s *DialogClientSession) ReadBye(req *sip.Request, tx sip.ServerTransaction) error {
@@ -70,15 +85,22 @@ func (s *DialogClientSession) Do(ctx context.Context, req *sip.Request) (*sip.Re
 // TransactionRequest is doing subsequent client DIALOG request based on RFC after initial session (INVITE) setup
 // https://www.rfc-editor.org/rfc/rfc3261#section-12.2.1
 // This ensures that you have proper request done within dialog. You should avoid setting any Dialog header (cseq, from, to, callid)
+//
+// It can be called before the 2xx, in the early dialog created by a provisional response with a To tag,
+// while WaitAnswer runs in another goroutine.
 func (s *DialogClientSession) TransactionRequest(ctx context.Context, req *sip.Request) (sip.ClientTransaction, error) {
-	s.buildReq(req)
+	if err := s.buildReq(req); err != nil {
+		return nil, err
+	}
 
 	// Passing option to avoid CSEQ apply
 	return s.UA.Client.TransactionRequest(ctx, req, s.requestValidate)
 }
 
 func (s *DialogClientSession) WriteRequest(req *sip.Request) error {
-	s.buildReq(req)
+	if err := s.buildReq(req); err != nil {
+		return err
+	}
 	return s.UA.Client.WriteRequest(req, s.requestValidate)
 }
 
@@ -93,7 +115,9 @@ func (s *DialogClientSession) requestValidate(c *Client, req *sip.Request) error
 	return nil
 }
 
-func (s *DialogClientSession) buildReq(req *sip.Request) {
+func (s *DialogClientSession) buildReq(req *sip.Request) error {
+	inviteResponse := s.loadInviteResponse()
+
 	// Keep any request inside dialog
 	// var mustHaveHeaders []sip.Header = nil
 	mustHaveHeaders := make([]sip.Header, 0, 5)
@@ -101,8 +125,13 @@ func (s *DialogClientSession) buildReq(req *sip.Request) {
 		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(invH))
 	}
 
-	if h, invH := req.To(), s.InviteResponse.To(); h == nil && invH != nil {
-		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(invH))
+	if req.To() == nil {
+		// https://datatracker.ietf.org/doc/html/rfc3261#section-12.1
+		// Only a response with a To tag creates a dialog, early or confirmed.
+		if inviteResponse == nil || !inviteResponse.To().Params.Has("tag") {
+			return fmt.Errorf("%w: no response with a To tag yet", ErrDialogOutsideDialog)
+		}
+		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(inviteResponse.To()))
 	}
 
 	if h, invH := req.CallID(), s.InviteRequest.CallID(); h == nil {
@@ -126,17 +155,20 @@ func (s *DialogClientSession) buildReq(req *sip.Request) {
 		req.PrependHeader(mustHaveHeaders...)
 	}
 
-	// For safety make sure we are starting with our last dialog cseq num
-	cseq.SeqNo = s.lastCSeqNo.Load()
-
-	if !req.IsAck() && !req.IsCancel() {
+	if req.IsAck() || req.IsCancel() {
+		// ACK and CANCEL repeat the CSeq number of their INVITE, even after other requests in an early dialog
+		cseq.SeqNo = s.lastInviteCSeqNo.Load()
+	} else {
 		// Do cseq increment within dialog
-		cseq.SeqNo++
+		cseq.SeqNo = s.lastCSeqNo.Add(1)
+		if req.Method == sip.INVITE {
+			s.lastInviteCSeqNo.Store(cseq.SeqNo)
+		}
 	}
 
 	// Check record route header
-	if s.InviteResponse != nil {
-		hdrs := s.InviteResponse.GetHeaders("record-route")
+	if inviteResponse != nil {
+		hdrs := inviteResponse.GetHeaders("record-route")
 		// More on
 		// https://datatracker.ietf.org/doc/html/rfc3261#section-16.12.1.1
 		if len(hdrs) > 0 {
@@ -153,7 +185,7 @@ func (s *DialogClientSession) buildReq(req *sip.Request) {
 				req.Recipient = rh.Address
 			}
 		} else if s.UA.RewriteContact {
-			req.SetDestination(s.InviteResponse.Source())
+			req.SetDestination(inviteResponse.Source())
 		}
 	}
 
@@ -161,9 +193,9 @@ func (s *DialogClientSession) buildReq(req *sip.Request) {
 		req.AppendHeader(sip.HeaderClone(&s.UA.ContactHDR))
 	}
 
-	s.lastCSeqNo.Store(cseq.SeqNo)
 	// Make sure transport matches original invite
 	req.SetTransport(s.InviteRequest.Transport())
+	return nil
 }
 
 // Close must be always called in order to cleanup some internal resources
@@ -211,6 +243,7 @@ func (d *DialogClientSession) Invite(ctx context.Context, options ...ClientReque
 
 	if err == nil {
 		d.lastCSeqNo.Store(inviteReq.CSeq().SeqNo)
+		d.lastInviteCSeqNo.Store(inviteReq.CSeq().SeqNo)
 	}
 
 	return err
@@ -247,7 +280,7 @@ func (s *DialogClientSession) WaitAnswer(ctx context.Context, opts AnswerOptions
 		}
 		select {
 		case r = <-tx.Responses():
-			s.InviteResponse = r
+			s.setInviteResponse(r)
 
 			// just pass
 		case <-ctx.Done():
@@ -356,7 +389,7 @@ func (s *DialogClientSession) WaitAnswer(ctx context.Context, opts AnswerOptions
 		return err
 	}
 	s.inviteTx = tx
-	s.InviteResponse = r
+	s.setInviteResponse(r)
 	s.ID = id
 	s.setState(sip.DialogStateEstablished)
 	return nil
@@ -389,7 +422,7 @@ func (s *DialogClientSession) inviteCancel(tx sip.ClientTransaction) error {
 
 		select {
 		case r := <-tx.Responses():
-			s.InviteResponse = r
+			s.setInviteResponse(r)
 			if r.IsProvisional() {
 				provisional = true
 				continue
