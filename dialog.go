@@ -39,7 +39,8 @@ type Dialog struct {
 	lastInviteCSeqNo atomic.Uint32
 
 	// InviteResponse is last response received or sent. It is not thread safe!
-	// Use it only as read only and do not change values
+	// Use it only as read only and do not change values.
+	// A client dialog writes it under a lock while WaitAnswer runs: read it directly only after WaitAnswer returns.
 	InviteResponse *sip.Response
 
 	state atomic.Int32

@@ -132,8 +132,8 @@ func (s *DialogClientSession) buildReq(req *sip.Request) error {
 		if inviteResponse != nil {
 			to = inviteResponse.To()
 		}
-		if to == nil || !to.Params.Has("tag") {
-			return fmt.Errorf("%w: no response with a To tag yet", ErrDialogOutsideDialog)
+		if to == nil || !to.Params.Has("tag") || !(inviteResponse.IsProvisional() || inviteResponse.IsSuccess()) {
+			return fmt.Errorf("%w: no early or confirmed dialog", ErrDialogOutsideDialog)
 		}
 		mustHaveHeaders = append(mustHaveHeaders, sip.HeaderClone(to))
 	}
@@ -450,6 +450,7 @@ func (s *DialogClientSession) Ack(ctx context.Context) error {
 	return s.WriteAck(ctx, ack)
 }
 
+// WriteAck sends the ACK with the CSeq number of the last INVITE sent in this dialog.
 func (s *DialogClientSession) WriteAck(ctx context.Context, ack *sip.Request) error {
 	// https://datatracker.ietf.org/doc/html/rfc3261#section-13.2.2.4
 	//

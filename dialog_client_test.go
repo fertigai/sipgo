@@ -422,7 +422,7 @@ func TestDialogClientEarlyRequest(t *testing.T) {
 		_, err := d.Do(context.TODO(), message())
 		require.ErrorIs(t, err, ErrDialogOutsideDialog)
 
-		// A 100 Trying carries no To tag, and a malformed 180 no To at all: still no dialog.
+		// A 100 Trying carries no To tag, a malformed 180 no To at all, and a 486 ends the dialog.
 		noTo := sip.NewResponseFromRequest(d.InviteRequest, sip.StatusRinging, "Ringing", nil)
 		noTo.RemoveHeader("To")
 		ctx, cancel := context.WithCancel(context.Background())
@@ -432,7 +432,9 @@ func TestDialogClientEarlyRequest(t *testing.T) {
 			got <- struct{}{}
 			return nil
 		}})
-		for _, res := range []*sip.Response{sip.NewResponseFromRequest(d.InviteRequest, sip.StatusTrying, "Trying", nil), noTo} {
+		busy := sip.NewResponseFromRequest(d.InviteRequest, sip.StatusBusyHere, "Busy Here", nil)
+		busy.To().Params.Add("tag", "callee")
+		for _, res := range []*sip.Response{sip.NewResponseFromRequest(d.InviteRequest, sip.StatusTrying, "Trying", nil), noTo, busy} {
 			go w.Receive(res)
 			<-got
 			_, err = d.Do(context.TODO(), message())
